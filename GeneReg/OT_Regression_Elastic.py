@@ -8,7 +8,7 @@ import pickle
 from datetime import datetime
 from kneed import KneeLocator
 
-class Fate_Lasso():
+class Fate_Elastic_Band():
     
     #Initializes Fate_Lasso with the following:
     #adata_full: An anndata containing all the cells given in fates
