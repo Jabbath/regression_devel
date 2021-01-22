@@ -19,8 +19,9 @@ class Fate_Lasso():
     #when not specified
     #factor_genes: Transcription factor genes which we'll restrict the regression to
     #common_names: The common names of genes
+    #indices: The indices of the cells we will consider
     def __init__(self, adata_full, fates, type_names,
-                 factor_genes, common_names):
+                 factor_genes, common_names, indices):
         self.adata_full = adata_full
         
         #Copy the fates so we don't modify the original
@@ -32,23 +33,14 @@ class Fate_Lasso():
         self.common_names = common_names
         
         self.TRAIN_RATIO = 0.7
+        self.train, self.test = self.split_data(indices, self.TRAIN_RATIO)
+        
+        #Memoize previously computed fits
+        self.computed_fits = {cell_type: {} for cell_type in type_names}
         
    #################################################
    # Core regression code
    #################################################
-
-    def apply_reg(self, cell_type, cell_indices, rep_genes, coeffs, intercept):        
-        exp_data = self.adata_full[cell_indices, rep_genes].X
-
-        fates_fit = []
-
-        # Compute the regression outcome
-        for i in range(len(exp_data)):
-            fate = np.dot(coeffs, exp_data[i]) + intercept
-            fates_fit.append(fate)
-        
-        self.fates.loc[cell_indices, cell_type + '_reg'] = fates_fit
-        
     # Given a list of cells which comprise our data,
     # and a training ratio, randomly splits the cells
     # into training and testing sets. training_ratio of
@@ -66,40 +58,40 @@ class Fate_Lasso():
         return train, test
 
 
-    def train_type_at_hpf(self, cell_type, train, test, alpha, positive=False):    
-        #Get the cells at the given hour
-        cells = self.fates.index
-
+    def train_type_at_hpf(self, cell_type, alpha, positive=False):    
         #Get training expression data and bary coords
-        train_exp_data = self.adata_full[train, self.factor_genes].X
-        train_bary_data = self.fates.loc[train, cell_type]
+        train_exp_data = self.adata_full[self.train, self.factor_genes].X
+        train_bary_data = self.fates.loc[self.train, cell_type]
         train_bary_data = train_bary_data.to_numpy()
-
-        #Train the model
-        reg = linear_model.Lasso(alpha=alpha, positive=positive)
-        reg.fit(train_exp_data, train_bary_data)
+        
+        #Train the model, checking if we already computed for this alpha
+        if str(alpha) in self.computed_fits[cell_type]:
+            reg = self.computed_fits[cell_type][str(alpha)]
+        else:
+            reg = linear_model.Lasso(alpha=alpha, positive=positive)
+            reg.fit(train_exp_data, train_bary_data)
+            
+            self.computed_fits[cell_type][str(alpha)] = reg
+      
         coeffs = reg.coef_
         intercept = reg.intercept_
         
         #Get R^2 score
-        R2 = reg.score(self.adata_full[test, self.factor_genes].X, self.fates.loc[test, cell_type])
-
-        #Apply the regression to the timepoint
-        self.apply_reg(cell_type, cells, self.factor_genes, coeffs, intercept)
+        R2 = reg.score(self.adata_full[self.test, self.factor_genes].X, self.fates.loc[self.test, cell_type])
 
         return coeffs, R2, intercept
     
     #Given a list of cells, trains against all possible cell types
     #Returns the found coefficients arranged by cell type, the R^2
     #value by cell type, and the training and testing sets of cells used.
-    def train_cells(self, cells, alphas, train, test, positive=False):
+    def train_cells(self, alphas, positive=False):
         #Store the results of each fit
         coeffs_arr = {cell_type: [] for cell_type in self.type_names}
         R2_arr = {cell_type: -9999 for cell_type in self.type_names}
         intercepts = {cell_type: -9999 for cell_type in self.type_names}
         
         for cell_type, alpha in zip(self.type_names, alphas):
-            coeffs, R2, intercept = self.train_type_at_hpf(cell_type, train, test, alpha, positive=positive)
+            coeffs, R2, intercept = self.train_type_at_hpf(cell_type, alpha, positive=positive)
             coeffs_arr[cell_type] = coeffs
             R2_arr[cell_type] = R2
             intercepts[cell_type] = intercept
@@ -141,31 +133,21 @@ class Fate_Lasso():
     #Given the indices of test cells and an array of R^2 values
     #prints metrics about the quality of fit. These currently include
     #avg. residual, std. dev. of residuals, R^2
-    def analyze_fit(self, test, R2_arr):
+    def analyze_fit(self, R2_arr):
         #Go through each cell type and calculate the residual
         for cell_type in self.type_names:
-            #Get our fitted data and the actual data
-            reg_data = self.fates.loc[test, cell_type + '_reg']
-            reg_data = np.array(reg_data)
-            actual = self.fates.loc[test, cell_type].to_numpy()
-
             score = R2_arr[cell_type]
-            difference = np.absolute(reg_data - actual)
-            avg = np.average(difference)
-            std = np.std(difference)
-
-            print('Average difference for ', cell_type, ': ', avg, 'Standard Deviation: ', std)
-            print('R^2 is:', score)
+            print('R^2 for {} is:'.format(cell_type), score)
             
-    def train_analyze(self, cells, alphas, train, test, positive=False):
+    def train_analyze(self, alphas, positive=False):
         #Run training
-        coeffs_arr, R2_arr, intercepts = self.train_cells(cells, alphas, train, test, positive=positive)
+        coeffs_arr, R2_arr, intercepts = self.train_cells(alphas, positive=positive)
         print()
         #Make gene lists
         genes_list = self.make_gene_lists(coeffs_arr, R2_arr, intercepts)
         print()
         #Print stats about the fit
-        self.analyze_fit(test, R2_arr)
+        self.analyze_fit(R2_arr)
         return genes_list
     
     ##########################################################
@@ -174,15 +156,13 @@ class Fate_Lasso():
     
     #Given cells to train/test on and alphas to check,
     #computes gene lists for the cells at each alpha
-    def get_gene_lists_at_alphas(self, cells, alphas, positive=False):
+    def get_gene_lists_at_alphas(self, alphas, positive=False):
         gene_lists = []
-        #Split data pre-training for consistency
-        train, test = self.split_data(cells, self.TRAIN_RATIO)
 
         #Go through each alpha and train each type at that alpha
         for alpha in alphas:
             alphas_arr = [alpha for i in range(10)]
-            genes_list = self.train_analyze(cells, alphas_arr, train, test, positive=positive)
+            genes_list = self.train_analyze(alphas_arr, positive=positive)
 
             gene_lists.append(genes_list)
 
@@ -299,8 +279,7 @@ class Fate_Lasso():
     #of R^2 vs. Number of genes calculated at each alpha,
     #for each cell type. Returns the alphas at the knee point
     #for each cell type.
-    def make_plots_R2_num_genes(self, cells, alphas, positive=False):
-        train, test = self.split_data(cells, self.TRAIN_RATIO)
+    def make_plots_R2_num_genes(self, alphas, positive=False):
         knees = []
         
         #Set the parameters for the figure 
@@ -316,7 +295,7 @@ class Fate_Lasso():
             for alpha in alphas:
                 #print('Started training for alpha', alpha, 'at', datetime.now())
                 # Train the model at each alpha
-                coeffs, R2, intercept = self.train_type_at_hpf(cell_type, train, test, alpha, positive=positive)
+                coeffs, R2, intercept = self.train_type_at_hpf(cell_type, alpha, positive=positive)
 
                 # Score each alpha by it's resultant R^2 value
                 scores.append(R2)
