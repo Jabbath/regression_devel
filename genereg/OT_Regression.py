@@ -279,7 +279,7 @@ class Fate_Lasso():
     #of R^2 vs. Number of genes calculated at each alpha,
     #for each cell type. Returns the alphas at the knee point
     #for each cell type.
-    def make_plots_R2_num_genes(self, alphas, positive=False):
+    def make_plots_R2_num_genes(self, alphas, positive=False, save_path=None):
         knees = []
         
         #Set the parameters for the figure 
@@ -330,6 +330,9 @@ class Fate_Lasso():
             for i in range(len(alphas)):
                 plt.annotate(alphas[i], (num_genes_arr[i], scores[i]))
             plt.grid()
+        
+        if save_path is not None:
+            plt.savefig(save_path)
         
         plt.show()
         return knees
