@@ -1,9 +1,0 @@
-.gitignore
-setup.py
-GeneReg/OT_Regression.py
-GeneReg/OT_Regression_Elastic.py
-GeneReg/__init__.py
-genereg.egg-info/PKG-INFO
-genereg.egg-info/SOURCES.txt
-genereg.egg-info/dependency_links.txt
-genereg.egg-info/top_level.txt
