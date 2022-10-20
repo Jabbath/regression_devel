@@ -11,16 +11,17 @@ from kneed import KneeLocator
 
 class Fate_Lasso():
     
-    #Initializes Fate_Lasso with the following:
-    #adata_full: An anndata containing all the cells given in fates
-    #fates: A pandas df containing cells on the rows and cell types
-    #on the columns. Entries are fate probabilities for each cell type.
-    #type_names: The type_names that should be examined for the regression
-    #TODO: make type_names optional and make it all the non-zero columns of fates
-    #when not specified
-    #factor_genes: Transcription factor genes which we'll restrict the regression to
-    #common_names: The common names of genes
-    #indices: The indices of the cells we will consider
+    # An object that can perform Lasso regressions on gene expression
+    # vs. fate.
+    #
+    # INPUT:
+    # adata_full: An anndata containing all the cells given in the fates dataframe.
+    # fates: A pandas df containing cells on the rows and cell types.
+    #        on the columns. Entries are fate probabilities for each cell type.
+    # type_names: The type_names that are of interest for the regressions.
+    # factor_genes: A list of genes which we'll restrict the regressions to.
+    # common_names: A pandas df translating gene names to common names.
+    # indices: The indices of the cells we will consider.
     def __init__(self, adata_full, fates, type_names,
                  factor_genes, common_names, indices, train_ratio):
         self.adata_full = adata_full
@@ -79,10 +80,20 @@ class Fate_Lasso():
 
         return coeffs, intercept, R2
     
-    #Given a list of cells, trains against all possible cell types
-    #Returns the found coefficients arranged by cell type, the R^2
-    #value by cell type, and the training and testing sets of cells used.
-    def train_cells(self, alphas, positive=False):
+    # Given a list of cells, trains against all possible cell types.
+    # Returns the found coefficients arranged by cell type, the R^2
+    # value by cell type and the intercepts for the fits.
+    # 
+    # INPUT:
+    # alphas: A list of alphas corresponding to celltypes. Each celltype is
+    #         trained for its corresponding alpha.
+    #
+    # OUTPUT:
+    # coeffs_arr: A dict of coefficients where coeffs_arr[celltype] is a list of coeffs
+    #             for that celltype.
+    # R2_arr: A dict of R^2 values for each celltype.
+    # intercepts: A dict of intercepts for each celltype.
+    def _train_cells(self, alphas, positive=False):
         #Store the results of each fit
         coeffs_arr = {cell_type: [] for cell_type in self.type_names}
         R2_arr = {cell_type: -9999 for cell_type in self.type_names}
@@ -97,10 +108,20 @@ class Fate_Lasso():
 
         return coeffs_arr, R2_arr, intercepts
     
-    #Given a list of fit coefficients for each cell type
-    #and an array of R^2 values for each cell type,
-    #creates a list of genes and corresponding coefficients
-    def make_gene_lists(self, coeffs_arr, R2_arr, intercepts):
+    # Given a list of fit coefficients for each cell type,
+    # an array of R^2 values for each cell type, and intercepts
+    # puts everything in a convenient dict by celltype along with
+    # the names of the non-zero genes.
+    #
+    # INPUT
+    # coeffs_arr: A dict of coefficient lists for each celltype.
+    # R2_arr: A dict of R^2 values for each celltype.
+    # intercepts: A dict of intercepts for each celltype.
+    #
+    # OUTPUT
+    # genes_list: A dict with entries for each celltype containing non-zero genes,
+    #             their coefficients, the R^2 value, and the intercept.
+    def _make_gene_lists(self, coeffs_arr, R2_arr, intercepts):
         #Make a list of genes in the network for each cell type (formatted without the P())
         genes_lists = {cell_type: {'genes': [], 'coefficients': [], 
                                    'R^2': -9999, 'intercept': -9999} for cell_type in self.type_names}
@@ -128,52 +149,59 @@ class Fate_Lasso():
 
         return genes_lists
     
-    #Given the indices of test cells and an array of R^2 values
-    #prints metrics about the quality of fit. These currently include
-    #avg. residual, std. dev. of residuals, R^2
-    def analyze_fit(self, R2_arr):
+    # Given the indices of test cells and an array of R^2 values
+    # prints metrics about the quality of fit. These currently include
+    # avg. residual, std. dev. of residuals, R^2.
+    #
+    # INPUT
+    # R2_arr: A dict of R^2 values by celltype
+    def _analyze_fit(self, R2_arr):
         #Go through each cell type and calculate the residual
         for cell_type in self.type_names:
             score = R2_arr[cell_type]
             print('R^2 for {} is:'.format(cell_type), score)
-            
+    
+    # Trains the each celltype at its corresponding alpha and
+    # prints some summary statistics.
+    #
+    # INPUT:
+    # alphas: The list of alphas corresponding to the celltypes.
+    # positive: Whether to use only positive coefficients for the fit.
+    #
+    # OUTPUT:
+    # genes_list: A dict with entries for each celltype containing non-zero genes,
+    #             their coefficients, the R^2 value, and the intercept.
     def train_analyze(self, alphas, positive=False):
         #Run training
-        coeffs_arr, R2_arr, intercepts = self.train_cells(alphas, positive=positive)
+        coeffs_arr, R2_arr, intercepts = self._train_cells(alphas, positive=positive)
         print()
         #Make gene lists
-        genes_list = self.make_gene_lists(coeffs_arr, R2_arr, intercepts)
+        genes_list = self._make_gene_lists(coeffs_arr, R2_arr, intercepts)
         print()
         #Print stats about the fit
-        self.analyze_fit(R2_arr)
+        self._analyze_fit(R2_arr)
         return genes_list
-    
-    #Given cells to train/test on and alphas to check,
-    #computes gene lists for the cells at each alpha
-    def get_gene_lists_at_alphas(self, alphas, positive=False):
-        gene_lists = []
-
-        #Go through each alpha and train each type at that alpha
-        for alpha in alphas:
-            alphas_arr = [alpha for i in range(10)]
-            genes_list = self.train_analyze(alphas_arr, positive=positive)
-
-            gene_lists.append(genes_list)
-
-        return gene_lists
     
     #Given a set of gene_lists computed at mulitple alphas,
     #and a pandas df of ATG names to common names,
-    #converts the ATG names to common
-    def lists_to_common_names(self, gene_lists, common_names):
+    #converts the ATG names to common.
+    #
+    # INPUT
+    # gene_list: A gene list, formatted like in train_analyze.
+    # common_names: A pd df translating gene names to common names.
+    #
+    # OUTPUT
+    # gene_list: The same gene "list" but with the list of genes translated to common
+    #            names, and the AT names added on as a separate list.
+    def list_to_common_names(self, gene_list, common_names):
         #Go through each alpha and change genes for each cell type
-        for gene_list in gene_lists:
-            for cell_type in self.type_names:
-                ATG_names = gene_list[cell_type]['genes']
-                common = list(self.common_names.loc[ATG_names].Name)
-                gene_list[cell_type]['genes'] = common
+        for cell_type in self.type_names:
+            ATG_names = gene_list[cell_type]['genes']
+            common = list(self.common_names.loc[ATG_names].Name)
+            gene_list[cell_type]['genes'] = common
+            gene_list[cell_type]['Gene AT Identifier Number'] = ATG_names
 
-        return gene_lists
+        return gene_list
     
     ##########################################################
     # Plotting code that can be used to determine default
