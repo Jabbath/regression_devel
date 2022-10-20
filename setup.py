@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name="genereg", # Replace with your own username
-    version="0.1.0",
+    version="0.2.0",
     author="Anton Afanassiev",
     author_email="anton.afanassiev@alumni.ubc.ca",
     description="A package to perform regression on gene expression data with OT fates.",
