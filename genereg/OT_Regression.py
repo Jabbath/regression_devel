@@ -4,6 +4,7 @@ from matplotlib import pyplot as plt
 import anndata
 from io import BytesIO
 from sklearn import linear_model
+from sklearn.model_selection import train_test_split
 import pickle
 from datetime import datetime
 from kneed import KneeLocator
@@ -21,7 +22,7 @@ class Fate_Lasso():
     #common_names: The common names of genes
     #indices: The indices of the cells we will consider
     def __init__(self, adata_full, fates, type_names,
-                 factor_genes, common_names, indices):
+                 factor_genes, common_names, indices, train_ratio):
         self.adata_full = adata_full
         
         #Copy the fates so we don't modify the original
@@ -32,33 +33,30 @@ class Fate_Lasso():
         self.factor_genes = factor_genes
         self.common_names = common_names
         
-        self.TRAIN_RATIO = 0.7
-        self.train, self.test = self.split_data(indices, self.TRAIN_RATIO)
+        self.TRAIN_RATIO = train_ratio
+        self.train, self.test = train_test_split(indices, train_size=self.TRAIN_RATIO)
         
         #Memoize previously computed fits
         self.computed_fits = {cell_type: {} for cell_type in type_names}
         
-   #################################################
-   # Core regression code
-   #################################################
-    # Given a list of cells which comprise our data,
-    # and a training ratio, randomly splits the cells
-    # into training and testing sets. training_ratio of
-    # the cells should fall into the training set.
-    def split_data(self, cells, training_ratio):    
-        # Shuffle the indices
-        indices = list(cells)
-        np.random.shuffle(indices)
-
-        # Split the data
-        end_index = int(len(indices) * training_ratio)
-        train = indices[:end_index]
-        test = indices[end_index:]
-
-        return train, test
-
-
-    def train_type_at_hpf(self, cell_type, alpha, positive=False):    
+    #################################################
+    # Core regression code
+    #################################################
+    
+    # Fits the cell fates for the given celltype using the Lasso model.
+    # The gene expression data on the "factor" genes is used as the independant
+    # variable.
+    # INPUT
+    # cell_type: The celltype whose fate we want to fit
+    # alpha: The alpha parameter for the Lasso model which controls the sparsity
+    # positive: Whether to fit the Lasso using positive coefficients
+    #
+    # OUTPUT
+    # coeffs: A vector of regression coefficients whose length is the number of
+    #         genes we used
+    # intercept: The intercept term for the regression
+    # R2: The R^2 value of the fit
+    def _train_celltype(self, cell_type, alpha, positive=False):    
         #Get training expression data and bary coords
         train_exp_data = self.adata_full[self.train, self.factor_genes].X
         train_bary_data = self.fates.loc[self.train, cell_type]
@@ -79,7 +77,7 @@ class Fate_Lasso():
         #Get R^2 score
         R2 = reg.score(self.adata_full[self.test, self.factor_genes].X, self.fates.loc[self.test, cell_type])
 
-        return coeffs, R2, intercept
+        return coeffs, intercept, R2
     
     #Given a list of cells, trains against all possible cell types
     #Returns the found coefficients arranged by cell type, the R^2
@@ -91,7 +89,7 @@ class Fate_Lasso():
         intercepts = {cell_type: -9999 for cell_type in self.type_names}
         
         for cell_type, alpha in zip(self.type_names, alphas):
-            coeffs, R2, intercept = self.train_type_at_hpf(cell_type, alpha, positive=positive)
+            coeffs, intercept, R2 = self._train_celltype(cell_type, alpha, positive=positive)
             coeffs_arr[cell_type] = coeffs
             R2_arr[cell_type] = R2
             intercepts[cell_type] = intercept
@@ -150,10 +148,6 @@ class Fate_Lasso():
         self.analyze_fit(R2_arr)
         return genes_list
     
-    ##########################################################
-    # Regression code with support for first encounter time
-    ##########################################################
-    
     #Given cells to train/test on and alphas to check,
     #computes gene lists for the cells at each alpha
     def get_gene_lists_at_alphas(self, alphas, positive=False):
@@ -167,67 +161,6 @@ class Fate_Lasso():
             gene_lists.append(genes_list)
 
         return gene_lists
-    
-    #Given gene lists computed at different alphas, a cell type,
-    #and a gene, computes the number of the first list where that
-    #gene is encountered. Throws error if the gene is not found.
-    def get_first_encounter_num(self, gene_lists, cell_type, gene):
-        first_encounter = -1
-
-        #Go through each gene list and look for the gene
-        for i, gene_list in enumerate(gene_lists):
-            if gene in gene_list[cell_type]['genes']:
-                first_encounter = i
-                break
-
-        #If the gene wasn't found throw an err
-        assert first_encounter >= 0
-
-        return first_encounter
-
-    #Given gene lists computed at different alphas, a cell type,
-    #and a list of genes, computes the number of the first gene list
-    #that gene is encountered for each gene.
-    def get_first_encounters_geneset(self, gene_lists, cell_type, genes):
-        first_encounter_nums = []
-
-        #Get a first encounter number for each gene
-        for gene in genes:
-            first_encounter_num = self.get_first_encounter_num(gene_lists, cell_type, gene)
-            first_encounter_nums.append(first_encounter_num)
-
-        return first_encounter_nums
-
-    #Given gene lists computed at each alpha in alphas, and a target alpha and cell
-    #type, returns the gene list for that target alpha and cell type.
-    def get_gene_list_from_gene_lists(self, gene_lists, cell_type, target_alpha, alphas):
-        #When we could not get a fit, just return an empty list
-        if target_alpha < 0:
-            return {'genes': [], 'coefficients': []}
-            
-        target_index = alphas.index(target_alpha)
-        gene_list = gene_lists[target_index][cell_type]
-        return gene_list
-
-
-    #Given a set of gene_lists computed for each alpha in alphas
-    #and a set of target alphas for each cell type. The target alphas
-    #represent which alpha we want to use to base our first encounter
-    #rank off of for each cell type. 
-    def get_first_encounter_ranks(self, gene_lists, target_alphas, alphas):
-        final_gene_list = {}
-
-        for cell_type, target_alpha in zip(self.type_names, target_alphas):
-            #Get the gene list for our cell type, computed for the target alpha
-            gene_list = self.get_gene_list_from_gene_lists(gene_lists, cell_type, target_alpha, alphas)
-
-            #Get the first encounter rank for each gene in the gene list
-            first_encounters = self.get_first_encounters_geneset(gene_lists, cell_type, gene_list['genes'])
-            gene_list['First Encounter'] = first_encounters
-
-            final_gene_list[cell_type] = gene_list
-
-        return final_gene_list
     
     #Given a set of gene_lists computed at mulitple alphas,
     #and a pandas df of ATG names to common names,
@@ -247,10 +180,20 @@ class Fate_Lasso():
     # values for alpha
     ##########################################################
     
-    #Given a list of numbers of genes, scores, and alphas, filters
-    #the number of genes list for repeat values and removes
-    #those indices from the other two arrays.
-    def filter_for_repeats(self, num_genes_arr, scores, alphas):
+    # Given a list of numbers of genes, scores, and alphas, filters
+    # the number of genes list for repeat values that occur next to each other and removes
+    # those indices from the other two lists. 
+    #
+    # INPUT
+    # num_genes_arr: A list containing numbers of non-zero genes from the regression.
+    # scores: A list of R^2 scores. Must be the same length as num_genes_arr.
+    # alphas: A list of alphas for which we fit the Lasso. Must be the same length as num_genes_arr.
+    #
+    # OUTPUT
+    # num_genes_arr_filt: num_genes_arr, but with the first instance for each repeated value removed.
+    # scores_filt: scores, but with the same indices removed as from num_genes_arr.
+    # alphas_filt: alphas, but with the same indices removed as from num_genes_arr.
+    def _filter_for_repeats(self, num_genes_arr, scores, alphas):
         num_genes_arr_filt = num_genes_arr.copy()
         scores_filt = scores.copy()
         alphas_filt = alphas.copy()
@@ -275,15 +218,25 @@ class Fate_Lasso():
 
         return num_genes_arr_filt, scores_filt, alphas_filt
     
-    #Given cells to fit on and alphas, creates plots
-    #of R^2 vs. Number of genes calculated at each alpha,
-    #for each cell type. Returns the alphas at the knee point
-    #for each cell type.
+    # Given cells to fit on and alphas, creates plots
+    # of R^2 vs. Number of genes with non-zero coeffs at each alpha.
+    # This is done for each cell type. The knee point is marked on the plots
+    # and returned.
+    #
+    # INPUT
+    # alphas: A list of alphas for the Lasso regression.
+    # positive: Whether to fit only with positive coefficients for Lasso.
+    # save_path: If specified, saves the figure to the given path
+    # annotate: Takes values "all" or "knee". 
+    #           Whether to label all points on the plot, or just the knee.
+    #
+    # OUTPUT
+    # knees: The knee points for each celltype.
     def make_plots_R2_num_genes(self, 
                                 alphas, 
                                 positive=False, 
                                 save_path=None,
-                                annotate='all'):
+                                annotate='knee'):
         knees = []
         
         #Set the parameters for the figure 
@@ -297,9 +250,8 @@ class Fate_Lasso():
             num_genes_arr = []
 
             for alpha in alphas:
-                #print('Started training for alpha', alpha, 'at', datetime.now())
                 # Train the model at each alpha
-                coeffs, R2, intercept = self.train_type_at_hpf(cell_type, alpha, positive=positive)
+                coeffs, intercept, R2 = self._train_celltype(cell_type, alpha, positive=positive)
 
                 # Score each alpha by it's resultant R^2 value
                 scores.append(R2)
@@ -316,7 +268,7 @@ class Fate_Lasso():
             plt.ylabel("$R^2$", fontsize=12)
 
             #We need to filter identical x values to prevent a division by zero in knee location
-            num_genes_arr_filt, scores_filt, alphas_filt = self.filter_for_repeats(num_genes_arr, scores, alphas)
+            num_genes_arr_filt, scores_filt, alphas_filt = self._filter_for_repeats(num_genes_arr, scores, alphas)
 
             #Locate the knee
             if len(scores_filt) >= 2:
@@ -346,6 +298,8 @@ class Fate_Lasso():
             plt.grid()
         
         plt.tight_layout()
+        
+        # Optionally save the figure
         if save_path is not None:
             plt.savefig(save_path)
         
