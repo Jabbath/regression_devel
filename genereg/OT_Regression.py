@@ -68,7 +68,7 @@ class Fate_Lasso():
         if str(alpha) in self.computed_fits[cell_type]:
             reg = self.computed_fits[cell_type][str(alpha)]
         else:
-            reg = linear_model.Lasso(alpha=alpha, positive=positive)
+            reg = linear_model.Lasso(alpha=alpha, positive=positive, random_state=0)
             reg.fit(train_exp_data, train_bary_data)
             
             self.computed_fits[cell_type][str(alpha)] = reg
@@ -279,13 +279,17 @@ class Fate_Lasso():
     #of R^2 vs. Number of genes calculated at each alpha,
     #for each cell type. Returns the alphas at the knee point
     #for each cell type.
-    def make_plots_R2_num_genes(self, alphas, positive=False, save_path=None):
+    def make_plots_R2_num_genes(self, 
+                                alphas, 
+                                positive=False, 
+                                save_path=None,
+                                annotate='all'):
         knees = []
         
         #Set the parameters for the figure 
         num_subplots = len(self.type_names)
         num_rows = int(np.ceil(float(num_subplots)/2))
-        plt.figure(figsize=(12, 6 * num_rows))
+        plt.figure(figsize=(2*7.2/5 * num_rows, 2*3.5))
         
         for i, cell_type in enumerate(self.type_names):
             print('Started cell type: ', cell_type, 'at: ', datetime.now())
@@ -305,11 +309,11 @@ class Fate_Lasso():
                 num_genes_arr.append(num_genes)
 
             # Plot R^2 vs number of genes
-            plt.subplot(num_rows, 2, i+1)
-            plt.title('# Genes vs. $R^2$ for ' + cell_type)
+            plt.subplot(2, num_rows, i+1)
+            plt.title(cell_type, fontsize=12)
             plt.scatter(num_genes_arr, scores)
-            plt.xlabel("# Genes")
-            plt.ylabel("$R^2$")
+            plt.xlabel("Number of Genes", fontsize=12)
+            plt.ylabel("$R^2$", fontsize=12)
 
             #We need to filter identical x values to prevent a division by zero in knee location
             num_genes_arr_filt, scores_filt, alphas_filt = self.filter_for_repeats(num_genes_arr, scores, alphas)
@@ -318,19 +322,30 @@ class Fate_Lasso():
             if len(scores_filt) >= 2:
                 kn = KneeLocator(num_genes_arr_filt, scores_filt, S=1, curve='concave', direction='increasing')
                 knee = kn.knee
-                knees.append(alphas_filt[num_genes_arr_filt.index(knee)])
+                
+                alpha_knee = alphas_filt[num_genes_arr_filt.index(knee)]
+                scores_knee = scores_filt[num_genes_arr_filt.index(knee)]
+                knees.append(alpha_knee)
                 
                 #Plot the knee as a red dot
-                plt.scatter(knee, scores_filt[num_genes_arr_filt.index(knee)], color='red')
+                plt.scatter(knee, scores_knee, color='red')
                 print('Knee found at ', alphas_filt[num_genes_arr_filt.index(knee)])
             else:
                 #If we only have one point or less, set the knee manually
+                alpha_knee = None
                 knees.append(-1)
-
-            for i in range(len(alphas)):
-                plt.annotate(alphas[i], (num_genes_arr[i], scores[i]))
+            
+            if annotate == 'all':
+                for i in range(len(alphas)):
+                    plt.annotate(alphas[i], (num_genes_arr[i], scores[i]))
+            if (annotate == 'knee') and (alpha_knee is not None):
+                plt.annotate(alpha_knee, (knee + 5, scores_knee-0.05), fontsize=12)
+                plt.ylim(0, 0.9)
+                plt.xlim(0, 300)
+            
             plt.grid()
         
+        plt.tight_layout()
         if save_path is not None:
             plt.savefig(save_path)
         
